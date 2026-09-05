@@ -1,0 +1,12 @@
+{
+  "model_name": "cnn_small",
+  "conv_channels": [
+    8,
+    16,
+    32
+  ],
+  "dropout": 0.6,
+  "epochs": 20,
+  "batch_size": 64,
+  "lr": 0.001
+}

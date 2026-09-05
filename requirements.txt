@@ -8,3 +8,4 @@ tqdm==4.70.0
 xgboost==3.4.1
 torch==2.13.0
 panns-inference
+pretty_midi

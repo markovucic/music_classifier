@@ -1,11 +1,13 @@
+import glob
 import hashlib
 import os
 
 import numpy as np
 import pandas as pd
+import pretty_midi
 from tqdm import tqdm
 
-from paths import CACHE_DIR
+from paths import CACHE_DIR, RAW_MIDI_DIR
 from config import SR, SEGMENT_DURATION, MIN_LAST_DURATION
 
 LABEL_SPLIT_DIRS = ("train_labels", "test_labels")
@@ -21,6 +23,43 @@ def _find_labels_path(labels_dir, composition_id):
             return path
 
     raise FileNotFoundError(f"No label file for composition_id={composition_id} under {labels_dir}")
+
+
+def _find_raw_midi_path(composer, composition_id):
+    matches = glob.glob(os.path.join(RAW_MIDI_DIR, composer, f"{composition_id}_*.mid"))
+    return matches[0] if matches else None
+
+
+def _load_raw_notes(composer, composition_id):
+    """All notes (across instruments) from the original .mid file, as (start_sec, velocity) pairs -
+    used for velocity/dynamics features that aren't in the MusicNet label CSVs."""
+    path = _find_raw_midi_path(composer, composition_id)
+
+    if path is None:
+        return np.empty((0, 2))
+
+    try:
+        pm = pretty_midi.PrettyMIDI(path)
+    except Exception:
+        return np.empty((0, 2))
+
+    notes = [
+        (note.start, note.velocity)
+        for instrument in pm.instruments
+        for note in instrument.notes
+    ]
+
+    return np.array(notes) if notes else np.empty((0, 2))
+
+
+def extract_velocity_features(raw_notes, start_sec, end_sec):
+    mask = (raw_notes[:, 0] >= start_sec) & (raw_notes[:, 0] < end_sec)
+    velocities = raw_notes[mask, 1]
+
+    if len(velocities) == 0:
+        return [0.0, 0.0, 0.0]
+
+    return [np.mean(velocities), np.std(velocities), velocities.max() - velocities.min()]
 
 
 def midi_feature_names():
@@ -39,10 +78,11 @@ def midi_feature_names():
     ]
     names += [f"pitch_class_{i}" for i in range(12)]
     names += [f"instrument_{i}" for i in INSTRUMENTS]
+    names += ["velocity_mean", "velocity_std", "velocity_range"]
     return names
 
 
-def extract_midi_features(notes, window_seconds=SEGMENT_DURATION):
+def extract_midi_features(notes, window_seconds=SEGMENT_DURATION, velocity_features=None):
     notes = notes.sort_values("start_time")
     pitches = notes["note"].to_numpy()
 
@@ -93,6 +133,7 @@ def extract_midi_features(notes, window_seconds=SEGMENT_DURATION):
     ]
     features.extend(pitch_class_hist)
     features.extend(instrument_hist)
+    features.extend(velocity_features if velocity_features is not None else [0.0, 0.0, 0.0])
 
     return np.array(features, dtype=np.float32)
 
@@ -109,7 +150,7 @@ def make_midi_dataset(
     with open(__file__, "rb") as f:
         code_hash = hashlib.sha1(f.read()).hexdigest()[:8]
     key = f"midi|{sr}|{segment_duration}|{min_last_duration}|{code_hash}|{','.join(ids)}"
-    cache_path = CACHE_DIR / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.npz"
+    cache_path = CACHE_DIR / f"{hashlib.sha1(key.encode()).hexdigest    ()[:16]}.npz"
 
     if use_cache and os.path.exists(cache_path):
         cached = np.load(cache_path, allow_pickle=True)
@@ -128,6 +169,7 @@ def make_midi_dataset(
         desc="Processing MIDI labels"
     ):
         notes = pd.read_csv(_find_labels_path(labels_dir, row["id"]))
+        raw_notes = _load_raw_notes(row["composer"], row["id"])
 
         total_length = int(row["seconds"] * sr)
 
@@ -144,7 +186,9 @@ def make_midi_dataset(
             if len(segment_notes) < 2:
                 continue
 
-            X.append(extract_midi_features(segment_notes, window_seconds=(end - start) / sr))
+            velocity_features = extract_velocity_features(raw_notes, start / sr, end / sr)
+            X.append(extract_midi_features(segment_notes, window_seconds=(end - start) / sr,
+                                            velocity_features=velocity_features))
             y.append(row["composer"])
             groups.append(row["work_id"])
 
@@ -154,4 +198,70 @@ def make_midi_dataset(
         os.makedirs(CACHE_DIR, exist_ok=True)
         np.savez(cache_path, X=X, y=y, groups=groups)
 
-    return X, y, groups
+    return pd.DataFrame(X, columns=midi_feature_names()), y, groups
+
+
+
+
+
+def make_midi_dataset_nn(
+    metadata_split,
+    labels_dir,
+    sr=SR,
+    segment_duration=SEGMENT_DURATION,
+    min_last_duration=MIN_LAST_DURATION,
+    use_cache=True
+):
+    ids = sorted(metadata_split["id"].astype(str).tolist())
+    with open(__file__, "rb") as f:
+        code_hash = hashlib.sha1(f.read()).hexdigest()[:8]
+    key = f"midi|{sr}|{segment_duration}|{min_last_duration}|{code_hash}|{','.join(ids)}"
+    cache_path = CACHE_DIR / f"{hashlib.sha1(key.encode()).hexdigest    ()[:16]}.npz"
+
+    if use_cache and os.path.exists(cache_path):
+        cached = np.load(cache_path, allow_pickle=True)
+        return cached["X"], cached["y"], cached["groups"]
+
+    X = []
+    y = []
+    groups = []
+
+    segment_length = sr * segment_duration
+    min_last_length = sr * min_last_duration
+
+    for _, row in tqdm(
+        metadata_split.iterrows(),
+        total=len(metadata_split),
+        desc="Processing MIDI labels"
+    ):
+        notes = pd.read_csv(_find_labels_path(labels_dir, row["id"]))
+        raw_notes = _load_raw_notes(row["composer"], row["id"])
+
+        total_length = int(row["seconds"] * sr)
+
+        for start in range(0, total_length, segment_length):
+            end = min(start + segment_length, total_length)
+
+            if end - start < min_last_length:
+                continue
+
+            segment_notes = notes[
+                (notes["start_time"] >= start) & (notes["start_time"] < end)
+            ]
+
+            if len(segment_notes) < 2:
+                continue
+
+            velocity_features = extract_velocity_features(raw_notes, start / sr, end / sr)
+            X.append(extract_midi_features(segment_notes, window_seconds=(end - start) / sr,
+                                            velocity_features=velocity_features))
+            y.append(row["composer"])
+            groups.append(row["work_id"])
+
+    X, y, groups = np.array(X), np.array(y), np.array(groups)
+
+    if use_cache:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        np.savez(cache_path, X=X, y=y, groups=groups)
+
+    return pd.DataFrame(X, columns=midi_feature_names()), y, groups

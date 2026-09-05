@@ -5,7 +5,7 @@ import numpy as np
 from sklearn import metrics
 from sklearn.preprocessing import LabelEncoder
 
-from evaluation import majority_vote_prediction, make_sample_weights
+from src.model.evaluation import majority_vote_prediction, make_sample_weights
 
 
 def get_random_search_params(param_distributions, count):

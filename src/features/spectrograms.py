@@ -5,33 +5,25 @@ import librosa
 import numpy as np
 from tqdm import tqdm
 
-from paths import CACHE_DIR
-from config import SEGMENT_DURATION, MIN_LAST_DURATION
-from dataset import _find_audio_path
+from src.utils.paths import CACHE_DIR
+from src.config import SR, SEGMENT_DURATION, MIN_LAST_DURATION, N_FFT
+from src.features.dataset import _find_audio_path
 
-PANNS_SR = 32000  # PANNs models are trained at 32kHz, not our usual 44.1kHz
-
-_model = None
-
-
-def _get_model():
-    global _model
-    if _model is None:
-        from panns_inference import AudioTagging
-        _model = AudioTagging(checkpoint_path=None, device="cpu")  # downloads checkpoint on first call
-    return _model
+# lower resolution than the classical pipeline's HOP_LENGTH=512 - CPU training speed matters more
+# here than fine time/frequency detail, and this is ~4x faster per sample to train on
+N_MELS = 64
+HOP_LENGTH = 1024
 
 
-def extract_panns_embedding(segment):
-    model = _get_model()
-    _, embedding = model.inference(segment[None, :].astype(np.float32))
-    return embedding[0].astype(np.float32)
+def extract_melspec(segment, sr):
+    mel = librosa.feature.melspectrogram(y=segment, sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH, n_mels=N_MELS)
+    return librosa.power_to_db(mel, ref=np.max).astype(np.float32)
 
 
-def make_panns_dataset(
+def make_spectrogram_dataset(
     metadata_split,
     audio_dir,
-    sr=PANNS_SR,
+    sr=SR,
     segment_duration=SEGMENT_DURATION,
     min_last_duration=MIN_LAST_DURATION,
     use_cache=True
@@ -39,7 +31,7 @@ def make_panns_dataset(
     ids = sorted(metadata_split["id"].astype(str).tolist())
     with open(__file__, "rb") as f:
         code_hash = hashlib.sha1(f.read()).hexdigest()[:8]
-    key = f"panns|{sr}|{segment_duration}|{min_last_duration}|{code_hash}|{','.join(ids)}"
+    key = f"melspec|{sr}|{segment_duration}|{min_last_duration}|{code_hash}|{','.join(ids)}"
     cache_path = CACHE_DIR / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.npz"
 
     if use_cache and os.path.exists(cache_path):
@@ -56,7 +48,7 @@ def make_panns_dataset(
     for _, row in tqdm(
         metadata_split.iterrows(),
         total=len(metadata_split),
-        desc="Processing PANNs embeddings"
+        desc="Processing spectrograms"
     ):
         path = _find_audio_path(audio_dir, row["id"])
         audio, _ = librosa.load(path, sr=sr)
@@ -67,7 +59,7 @@ def make_panns_dataset(
             if len(segment) < min_last_length:
                 continue
 
-            X.append(extract_panns_embedding(segment))
+            X.append(extract_melspec(segment, sr))
             y.append(row["composer"])
             groups.append(row["work_id"])
 

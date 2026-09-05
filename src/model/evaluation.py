@@ -8,7 +8,7 @@ from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 
-from config import N_SPLITS, RANDOM_STATE
+from src.config import N_SPLITS, RANDOM_STATE
 
 
 def make_sample_weights(y, groups):

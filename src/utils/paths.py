@@ -1,6 +1,6 @@
 from pathlib import Path
 
-ROOT_PATH = Path(__file__).resolve().parent
+ROOT_PATH = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = ROOT_PATH / "data"
 
 MUSICNET_ROOT = DATA_DIR / "musicnet" / "musicnet"

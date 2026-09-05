@@ -7,8 +7,8 @@ import pandas as pd
 import pretty_midi
 from tqdm import tqdm
 
-from paths import CACHE_DIR, RAW_MIDI_DIR
-from config import SR, SEGMENT_DURATION, MIN_LAST_DURATION
+from src.utils.paths import CACHE_DIR, RAW_MIDI_DIR
+from src.config import SR, SEGMENT_DURATION, MIN_LAST_DURATION
 
 LABEL_SPLIT_DIRS = ("train_labels", "test_labels")
 

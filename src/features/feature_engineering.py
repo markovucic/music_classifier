@@ -1,7 +1,7 @@
 import librosa
 import numpy as np
 
-from config import N_FFT, HOP_LENGTH, N_MFCC
+from src.config import N_FFT, HOP_LENGTH, N_MFCC
 
 PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 

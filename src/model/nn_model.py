@@ -16,9 +16,10 @@ from sklearn.model_selection import GroupShuffleSplit
 
 from sklearn.ensemble import RandomForestClassifier
 
-from evaluation import make_sample_weights, soft_vote_predictions, split_by_work, soft_vote_probs
+from src.model.evaluation import make_sample_weights, soft_vote_predictions, split_by_work, soft_vote_probs
+from src.utils.paths import ROOT_PATH
 
-OUTPUT_DIR = Path("output")
+OUTPUT_DIR = ROOT_PATH / "output"
 
 
 def _spec_augment(x, freq_mask=20, time_mask=40, n_freq_masks=1, n_time_masks=1):

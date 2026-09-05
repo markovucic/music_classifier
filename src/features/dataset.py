@@ -3,12 +3,15 @@ import os
 import logging
 import time
 
+import librosa
+import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
-from config import SR, SEGMENT_DURATION, MIN_LAST_DURATION
-from paths import CACHE_DIR, FEATURE_CACHE_DIR
-from cache_hash import group_hash
-import feature_engineering
+from src.config import SR, SEGMENT_DURATION, MIN_LAST_DURATION, MIN_WORKS_PER_COMPOSER
+from src.utils.paths import CACHE_DIR, FEATURE_CACHE_DIR, METADATA_PATH
+from src.utils.cache_hash import group_hash
+from src.features import feature_engineering
 
 logger = logging.getLogger(__file__)
 
@@ -77,8 +80,6 @@ def make_work_level_dataset(X, y, groups):
 
     Return (X_work, y_work, work_ids), ordered by work ID.
     """
-    import numpy as np
-
     X_work = []
     y_work = []
     work_ids = []
@@ -97,14 +98,6 @@ def make_work_level_dataset(X, y, groups):
         work_ids.append(work_id)
 
     return np.array(X_work), np.array(y_work), np.array(work_ids)
-
-
-def _feature_engineering_version():
-    """Hash of feature_engineering.py so a cache is auto-invalidated when it changes."""
-    import feature_engineering
-
-    with open(feature_engineering.__file__, "rb") as f:
-        return hashlib.sha1(f.read()).hexdigest()[:8]
 
 
 def _find_audio_path(audio_dir, composition_id):

@@ -1,8 +1,8 @@
 import kagglehub
-from paths import DATA_DIR
+from src.utils.paths import DATA_DIR
 
 def download_music_net() -> str:
-    path = kagglehub.dataset_download("imsparsh/musicnet-dataset", output_dir=DATA_DIR)
+    path = kagglehub.dataset_download("imsparsh/musicnet-dataset", output_dir=str(DATA_DIR))
     return path 
 
 if __name__ == "__main__":

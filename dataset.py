@@ -65,6 +65,33 @@ def load_metadata(
     )
 
 
+def make_work_level_dataset(X, y, groups):
+    """Aggregate segment features into one mean/std feature vector per work.
+
+    Return (X_work, y_work, work_ids), ordered by work ID.
+    """
+    import numpy as np
+
+    X_work = []
+    y_work = []
+    work_ids = []
+
+    for work_id in np.unique(groups):
+        mask = groups == work_id
+        X_segments = X[mask]
+        y_segments = y[mask]
+
+        mean_features = X_segments.mean(axis=0)
+        std_features = X_segments.std(axis=0)
+        work_features = np.concatenate([mean_features, std_features])
+
+        X_work.append(work_features)
+        y_work.append(y_segments[0])
+        work_ids.append(work_id)
+
+    return np.array(X_work), np.array(y_work), np.array(work_ids)
+
+
 def _feature_engineering_version():
     """Hash of feature_engineering.py so a cache is auto-invalidated when it changes."""
     import feature_engineering

@@ -3,6 +3,12 @@ from collections import Counter
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
+from sklearn import metrics
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from torch.utils.data import DataLoader, TensorDataset
+
+from config import N_SPLITS, RANDOM_STATE
 
 
 def make_sample_weights(y, groups):
@@ -252,6 +258,150 @@ def train_and_evaluate_neural_network(
     }
 
     return model, history
+
+def cross_validate_neural_network(
+    model_class,
+    X,
+    y,
+    groups=None,
+    *,
+    n_splits=N_SPLITS,
+    epochs=20,
+    batch_size=64,
+    learning_rate=1e-3,
+    weight_decay=0.0,
+    random_state=RANDOM_STATE,
+    device=None,
+    print_every=5,
+    show_plots=True,
+):
+    """Train a fresh fully connected network per fold and report held-out results.
+
+    model_class must accept input_size and num_classes. X is a 2D feature matrix;
+    y contains unencoded labels. With groups, use StratifiedGroupKFold and majority
+    voting to score one prediction per work. Without groups, use StratifiedKFold
+    and score rows directly (for datasets with one row per work).
+
+    Fit scaling only on each training fold. Curves show row/segment-level loss and
+    accuracy; final metrics use works when groups are supplied. These are CV
+    validation scores, not scores on an independent test set after model selection.
+
+    Return fold_results (indices, histories, accuracy and macro F1), mean scores,
+    decoded held-out y_true/y_pred, class names, and a classification report.
+    Trained models are not retained in memory.
+    """
+    X = np.asarray(X)
+    y = np.asarray(y)
+    if X.ndim != 2 or y.ndim != 1 or len(X) != len(y) or len(y) == 0:
+        raise ValueError("X must be a non-empty 2D matrix with one label per row")
+    if epochs < 1 or batch_size < 1 or print_every < 1:
+        raise ValueError("epochs, batch_size and print_every must be positive")
+
+    if groups is not None:
+        groups = np.asarray(groups)
+        if groups.ndim != 1 or len(groups) != len(y):
+            raise ValueError("groups must contain one work ID per row")
+        for work_id in np.unique(groups):
+            if len(np.unique(y[groups == work_id])) != 1:
+                raise ValueError(f"Work {work_id!r} has more than one class label")
+
+    device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    label_encoder = LabelEncoder()
+    y_encoded = label_encoder.fit_transform(y)
+    splitter_class = StratifiedGroupKFold if groups is not None else StratifiedKFold
+    splitter = splitter_class(n_splits=n_splits, shuffle=True, random_state=random_state)
+    splits = splitter.split(X, y_encoded, groups) if groups is not None else splitter.split(X, y_encoded)
+
+    print(f"\n{model_class.__name__} | device: {device}")
+    print("Classes:", label_encoder.classes_)
+    fold_results = []
+    all_true, all_pred = [], []
+
+    for fold, (train_idx, val_idx) in enumerate(splits, start=1):
+        print(f"\n========== FOLD {fold} ==========")
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X[train_idx])
+        X_val = scaler.transform(X[val_idx])
+        y_train, y_val = y_encoded[train_idx], y_encoded[val_idx]
+
+        train_dataset = TensorDataset(
+            torch.tensor(X_train, dtype=torch.float32),
+            torch.tensor(y_train, dtype=torch.long),
+        )
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        model = model_class(input_size=X.shape[1], num_classes=len(label_encoder.classes_)).to(device)
+        criterion = torch.nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+
+        model, history = train_and_evaluate_neural_network(
+            model=model,
+            train_loader=train_loader,
+            X_val=X_val,
+            y_val=y_val,
+            criterion=criterion,
+            optimizer=optimizer,
+            device=device,
+            epochs=epochs,
+            print_every=print_every,
+        )
+        if show_plots:
+            plot_training_history(history, fold=fold)
+
+        model.eval()
+        with torch.no_grad():
+            logits = model(torch.tensor(X_val, dtype=torch.float32, device=device))
+            predictions = logits.argmax(dim=1).cpu().numpy()
+
+        if groups is not None:
+            fold_true, fold_pred = majority_vote_prediction(y_val, predictions, groups[val_idx])
+        else:
+            fold_true, fold_pred = y_val, predictions
+
+        accuracy = metrics.accuracy_score(fold_true, fold_pred)
+        macro_f1 = metrics.f1_score(fold_true, fold_pred, average="macro", zero_division=0)
+        fold_results.append({
+            "fold": fold,
+            "train_indices": train_idx,
+            "val_indices": val_idx,
+            "history": history,
+            "accuracy": accuracy,
+            "macro_f1": macro_f1,
+        })
+        all_true.extend(fold_true)
+        all_pred.extend(fold_pred)
+        print(f"Fold {fold}: accuracy={accuracy:.4f}, macro F1={macro_f1:.4f}")
+
+    y_true = label_encoder.inverse_transform(np.asarray(all_true, dtype=int))
+    y_pred = label_encoder.inverse_transform(np.asarray(all_pred, dtype=int))
+    mean_accuracy = float(np.mean([r["accuracy"] for r in fold_results]))
+    mean_macro_f1 = float(np.mean([r["macro_f1"] for r in fold_results]))
+    report = metrics.classification_report(
+        y_true, y_pred, labels=label_encoder.classes_, output_dict=True, zero_division=0,
+    )
+    print("\n========== UKUPNI REZULTATI ==========")
+    print(f"Mean accuracy: {mean_accuracy:.4f}")
+    print(f"Mean macro F1: {mean_macro_f1:.4f}")
+    print(metrics.classification_report(y_true, y_pred, labels=label_encoder.classes_, zero_division=0))
+
+    if show_plots:
+        metrics.ConfusionMatrixDisplay.from_predictions(
+            y_true, y_pred, labels=label_encoder.classes_, normalize="true",
+        )
+        plt.title(f"{model_class.__name__} — cross-validation")
+        plt.tight_layout()
+        plt.show()
+
+    return {
+        "model_name": model_class.__name__,
+        "classes": label_encoder.classes_,
+        "fold_results": fold_results,
+        "mean_accuracy": mean_accuracy,
+        "mean_macro_f1": mean_macro_f1,
+        "y_true": y_true,
+        "y_pred": y_pred,
+        "classification_report": report,
+    }
+
 
 def plot_training_history(history, fold=None):
 

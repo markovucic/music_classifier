@@ -22,7 +22,6 @@ def extract_power(segment):
 
 
 def extract_mfcc_matrix(power, sr):
-    """Raw MFCC matrix (n_mfcc x frames), shared by the mean/std and delta features."""
     mel = librosa.feature.melspectrogram(
         S=power,
         sr=sr,
@@ -44,16 +43,14 @@ def extract_mfcc_matrix(power, sr):
 
 
 def extract_mfcc(power, sr):
-    """Extracts MFCC and returns tuple (mfcc mean, mfcc std deviation)"""
-    mfcc = extract_mfcc_matrix(power, sr)
 
+    mfcc = extract_mfcc_matrix(power, sr)
     return np.mean(mfcc, axis=1), np.std(mfcc, axis=1)
 
 
 def extract_mfcc_delta(mfcc):
-    """First-order MFCC delta (rate of timbre change) mean/std."""
-    delta = librosa.feature.delta(mfcc, order=1)
 
+    delta = librosa.feature.delta(mfcc, order=1)
     return np.mean(delta, axis=1), np.std(delta, axis=1)
 
 
@@ -63,17 +60,15 @@ def extract_chroma(power, sr):
         S=power,
         sr=sr
     )
-
     return chroma, np.mean(chroma, axis=1), np.std(chroma, axis=1)
 
 
 def extract_tonnetz(chroma, sr):
-    """Harmonic-relation (tonnetz) mean/std, derived from an already-computed chroma."""
+
     tonnetz = librosa.feature.tonnetz(
         chroma=chroma,
         sr=sr
     )
-
     return np.mean(tonnetz, axis=1), np.std(tonnetz, axis=1)
 
 
@@ -83,7 +78,6 @@ def extract_spectral_centroid(magnitude, sr):
         S=magnitude,
         sr=sr
     )
-
     return np.mean(centroid), np.std(centroid)
 
 def extract_spectral_bandwidth(magnitude, sr):
@@ -92,7 +86,6 @@ def extract_spectral_bandwidth(magnitude, sr):
         S=magnitude,
         sr=sr
     )
-
     return np.mean(bandwidth), np.std(bandwidth)
 
 def extract_spectral_rollof(magnitude, sr):
@@ -101,17 +94,15 @@ def extract_spectral_rollof(magnitude, sr):
         S=magnitude,
         sr=sr
     )
-
     return np.mean(rolloff), np.std(rolloff)
 
 
 def extract_spectral_contrast(magnitude, sr):
-    """Peak-vs-valley contrast per frequency band (mean+std per band)."""
+
     contrast = librosa.feature.spectral_contrast(
         S=magnitude,
         sr=sr
     )
-
     return np.mean(contrast, axis=1), np.std(contrast, axis=1)
 
 
@@ -120,40 +111,36 @@ def extract_spectral_flatness(magnitude):
     flatness = librosa.feature.spectral_flatness(
         S=magnitude
     )
-
     return np.mean(flatness), np.std(flatness)
 
 
 def extract_zero_crossing_rate(segment):
-    """How often the raw waveform changes sign — roughness/percussiveness."""
+
     zcr = librosa.feature.zero_crossing_rate(
         segment,
         frame_length=N_FFT,
         hop_length=HOP_LENGTH
     )
-
     return np.mean(zcr), np.std(zcr)
 
 
 def extract_tempo_onset(segment, sr):
-    """Estimated tempo plus mean/std of the onset-strength envelope (rhythmic density)."""
+
     onset_env = librosa.onset.onset_strength(
         y=segment,
         sr=sr,
         hop_length=HOP_LENGTH
     )
-
     tempo = librosa.feature.tempo(
         onset_envelope=onset_env,
         sr=sr,
         hop_length=HOP_LENGTH
     )[0]
-
     return tempo, np.mean(onset_env), np.std(onset_env)
 
 
 def extract_harmonic_percussive_ratio(segment):
-    """Share of energy that is harmonic (pitched/legato) vs. percussive (attack-like)."""
+
     harmonic, percussive = librosa.effects.hpss(segment)
 
     harmonic_rms = np.sqrt(np.mean(harmonic ** 2))
@@ -169,17 +156,13 @@ def extract_rms(magnitude):
     rms = librosa.feature.rms(
         S=magnitude
     )
-
     return np.mean(rms), np.std(rms)
 
 
-# N_MFCC_DELTA <= N_MFCC - lower it to prune delta coefficients after a feature-importance review
-# feature importance review (RF, 5-fold, raw audio): only 2/40 delta dims made the top-25
 N_MFCC_DELTA = 8
 
 
-# which context keys each group needs - lets _build_context skip work for groups that aren't
-# being (re)computed (e.g. a cache hit elsewhere means we never need mfcc_matrix at all)
+# which context keys each group needs
 CONTEXT_REQUIREMENTS = {
     "mfcc": {"mfcc_matrix"},
     "mfcc_delta": {"mfcc_matrix"},
@@ -199,7 +182,7 @@ CONTEXT_REQUIREMENTS = {
 
 def _build_context(segment, sr, needed_groups=None):
     """Shared intermediates (STFT/MFCC matrix/chroma), computed lazily: only what
-    needed_groups actually requires (default: everything, i.e. all registered groups)."""
+    needed_groups actually requires"""
     if needed_groups is None:
         needed_groups = FEATURE_REGISTRY.keys()
 
@@ -299,7 +282,7 @@ def _harmonic_percussive_values(ctx):
     return np.array(extract_harmonic_percussive_ratio(ctx["segment"]))
 
 
-# one row per feature group: (values_fn, names_fn) - kept together so they can't drift out of sync
+# one row per feature group: (values_fn, names_fn)
 FEATURE_REGISTRY = {
     "mfcc": (_mfcc_values, _mfcc_names),
     "mfcc_delta": (_mfcc_delta_values, _mfcc_delta_names),

@@ -63,11 +63,7 @@ def load_metadata(
     min_works_per_composer=MIN_WORKS_PER_COMPOSER,
     exclude_composers=None,
 ):
-    """Read MusicNet metadata and apply filter_metadata, ready for dataset builders.
-
-    Uses paths.METADATA_PATH and config.MIN_WORKS_PER_COMPOSER by default.
-    For an already loaded DataFrame, call filter_metadata directly.
-    """
+    """Read MusicNet metadata and apply filter_metadata, ready for dataset builders."""
     return filter_metadata(
         pd.read_csv(metadata_path),
         min_works_per_composer=min_works_per_composer,
@@ -101,7 +97,11 @@ def make_work_level_dataset(X, y, groups):
 
 
 def _find_audio_path(audio_dir, composition_id):
-    """MusicNet splits recordings across train_data/ and test_data/ subfolders."""
+    """
+    MusicNet recordings are split across train_data/ and test_data/ folders.
+    Since data quantity is low - we use cross validation so we don't care for the splits,
+    we collect the audio files from both sources and delay the split.
+    """
     for split_dir in AUDIO_SPLIT_DIRS:
         path = os.path.join(audio_dir, split_dir, f"{composition_id}.wav")
 
@@ -115,8 +115,8 @@ def _find_audio_path(audio_dir, composition_id):
 
 
 def _load_audio_cached(path, composition_id, sr, use_cache=True):
-    """Caches the decoded waveform itself, per (composition_id, sr) - so re-running feature
-    extraction (e.g. to fill in one missing feature group) doesn't need to re-decode audio."""
+    """Caches the decoded waveform itself, per (composition_id, sr) - 
+    re-running feature extraction doesn't waste time on re-decoding of audio."""
     cache_path = CACHE_DIR / f"audio_{composition_id}_{sr}.npy"
 
     if use_cache and os.path.exists(cache_path):
@@ -142,11 +142,11 @@ def make_dataset(
     min_last_duration=MIN_LAST_DURATION,
     use_cache=True
 ):
-    """Caches each feature GROUP separately under FEATURE_CACHE_DIR (one .npz per group,
-    keyed by a hash of only that group's dependency functions). Adding, removing or editing
-    one group in feature_engineering.FEATURE_REGISTRY only recomputes that group - audio is
-    decoded (from the audio cache) only if at least one group is missing."""
-
+    """
+    Caches each feature group separately.
+    Adding, removing or editing one group in feature_engineering.FEATURE_REGISTRY 
+    only recomputes that group
+    """
     ids = sorted(metadata_split["id"].astype(str).tolist())
     dataset_id = hashlib.sha1(
         f"{sr}|{segment_duration}|{min_last_duration}|{','.join(ids)}".encode()

@@ -11,16 +11,12 @@ from src.model.evaluation import majority_vote_prediction, make_sample_weights
 
 
 def _sample_weight_kwarg(model, sample_weights):
-    """Pipeline.fit needs sample_weight prefixed with the last step's name; a plain estimator
-    takes it directly."""
     if isinstance(model, Pipeline):
         return {f"{model.steps[-1][0]}__sample_weight": sample_weights}
     return {"sample_weight": sample_weights}
 
 
 def _normalize_param_grid(model, param_grid):
-    """Auto-prefix param_grid keys for a Pipeline (e.g. "C" -> "svc__C"), so the same
-    param_grid works whether model is a plain estimator or wrapped in a pipeline."""
     if not isinstance(model, Pipeline):
         return param_grid
 
@@ -34,8 +30,6 @@ def _normalize_param_grid(model, param_grid):
 
 
 def _validate_param_grid(model, param_grid):
-    """Fail fast on unknown/unprefixed param names (e.g. "C" instead of "svc__C" for a
-    Pipeline) instead of erroring deep inside the CV loop."""
     unknown = set(param_grid) - set(model.get_params())
     if unknown:
         raise ValueError(
@@ -59,9 +53,9 @@ def get_grid_search_params(param_distributions):
 
 
 def get_best_result(results, thresholds=(0.01, 0.05, 0.1, 0.2)):
-    """Among results within `th` of the best accuracy AND best macro F1, return the one with
+    """Among results within thresholds of the best accuracy AND best macro F1, return the one with
     the highest macro F1. Guards against picking hyperparameters that only won by CV noise;
-    progressively relaxes th until at least one candidate qualifies."""
+    progressively relaxes thresholds until at least one candidate qualifies."""
     max_acc = max(r[1] for r in results)
     max_f1 = max(r[2] for r in results)
 
@@ -147,7 +141,8 @@ def train_classical_model(X, y, groups, model, cv, param_grid=None, randomized_s
 
 def nested_cv_classical(X, y, groups, model, param_grid, outer_cv, inner_cv,
                          randomized_search=False, count=10, label_encode=False):
-    """Outer loop = generalization estimate, inner loop (train_classical_model) = tuning.
+    """Nested cross-validation - because of small dataset training size.
+    Outer loop = generalization estimate, inner loop (train_classical_model) = tuning.
     Returns (fold_results, all_work_true, all_work_pred):
     fold_results is [(best_params, outer_acc, outer_f1), ...] per outer fold."""
 
@@ -242,16 +237,23 @@ def _refit_and_collect(X, y, groups, model, params, cv, label_encode):
 
 def run_classical_train_pipeline(X, y, groups, model, cv, param_grid=None, outer_cv=None,
                   randomized_search=False, count=10, label_encode=False):
-    """Runs hyperparameter search + evaluation, then prints the report and plots the confusion
-    matrix. If outer_cv is given, runs nested CV (cv is treated as the inner search loop);
-    otherwise cv is used both to pick hyperparameters and to produce the final report.
+    """Full classical model training pipeline.
+    Evaluates the model with cross-validation. If supplied - runs hyperparameter search,
+    in that case performing nested cross-validation, then prints the report and plots the confusion
+    matrix. 
+    
+    To perform hyperparameter search, both outer_cv and param_grid must be supplied, otherwise
+    error is raised.
 
-    For scaled models (e.g. SVM), pass model=make_pipeline(StandardScaler(), SVC(...)) and
-    prefix param_grid keys accordingly (e.g. "svc__C") - the scaler then gets refit on each
-    fold's train split automatically, never touching that fold's validation data."""
+    For scaled models (e.g. SVM), pass model=make_pipeline(StandardScaler(), SVC(...)) -
+    the scaler then gets refit on each fold's train split automatically, 
+    never touching that fold's validation data."""
 
-    if not param_grid:
-        raise ValueError("param_grid must not be empty")
+    if outer_cv is None and param_grid is not None:
+        raise ValueError("outer_cv must be supplied when performing hyperparameter tuning")
+
+    if outer_cv is not None and param_grid is None:
+        raise ValueError("param_grid must not be empty when performing hyperparameter tuning")
 
     if outer_cv is not None:
         fold_results, all_work_true, all_work_pred = nested_cv_classical(

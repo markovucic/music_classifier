@@ -202,8 +202,7 @@ def make_midi_dataset(
 
 
 
-
-
+# CURRENTLY JUST A PLACEHOLDER DUPLICATE - IDEA IS FOR IT TO BE LOAD CHANNELS FOR NN INPUT
 def make_midi_dataset_nn(
     metadata_split,
     labels_dir,

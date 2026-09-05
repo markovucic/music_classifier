@@ -237,7 +237,7 @@ def train_and_evaluate_neural_network(
 
 
         # =========================
-        # ISPIS
+        # PRINT
         # =========================
         if (epoch + 1) % print_every == 0:
 
@@ -259,6 +259,71 @@ def train_and_evaluate_neural_network(
 
     return model, history
 
+
+def plot_training_history(history, fold=None):
+
+        epochs = range(
+            1,
+            len(history["train_loss"]) + 1
+        )
+    
+        fig, axes = plt.subplots(
+            1,
+            2,
+            figsize=(14, 5)
+        )
+    
+        # LOSS
+        axes[0].plot(
+            epochs,
+            history["train_loss"],
+            label="Train loss"
+        )
+    
+        axes[0].plot(
+            epochs,
+            history["val_loss"],
+            label="Validation loss"
+        )
+    
+        axes[0].set_xlabel("Epoch")
+        axes[0].set_ylabel("Loss")
+        axes[0].set_title(
+            f"Fold {fold} - Loss"
+            if fold is not None
+            else "Loss"
+        )
+        axes[0].legend()
+        axes[0].grid()
+    
+    
+        # ACCURACY
+        axes[1].plot(
+            epochs,
+            history["train_accuracy"],
+            label="Train accuracy"
+        )
+    
+        axes[1].plot(
+            epochs,
+            history["val_accuracy"],
+            label="Validation accuracy"
+        )
+    
+        axes[1].set_xlabel("Epoch")
+        axes[1].set_ylabel("Accuracy")
+        axes[1].set_title(
+            f"Fold {fold} - Accuracy"
+            if fold is not None
+            else "Accuracy"
+        )
+        axes[1].legend()
+        axes[1].grid()
+    
+        plt.tight_layout()
+        plt.show()
+
+
 def cross_validate_neural_network(
     model_class,
     X,
@@ -279,16 +344,10 @@ def cross_validate_neural_network(
 
     model_class must accept input_size and num_classes. X is a 2D feature matrix;
     y contains unencoded labels. With groups, use StratifiedGroupKFold and majority
-    voting to score one prediction per work. Without groups, use StratifiedKFold
-    and score rows directly (for datasets with one row per work).
-
-    Fit scaling only on each training fold. Curves show row/segment-level loss and
-    accuracy; final metrics use works when groups are supplied. These are CV
-    validation scores, not scores on an independent test set after model selection.
+    voting to score one prediction per work.
 
     Return fold_results (indices, histories, accuracy and macro F1), mean scores,
     decoded held-out y_true/y_pred, class names, and a classification report.
-    Trained models are not retained in memory.
     """
     X = np.asarray(X)
     y = np.asarray(y)
@@ -402,66 +461,3 @@ def cross_validate_neural_network(
         "classification_report": report,
     }
 
-
-def plot_training_history(history, fold=None):
-
-        epochs = range(
-            1,
-            len(history["train_loss"]) + 1
-        )
-    
-        fig, axes = plt.subplots(
-            1,
-            2,
-            figsize=(14, 5)
-        )
-    
-        # LOSS
-        axes[0].plot(
-            epochs,
-            history["train_loss"],
-            label="Train loss"
-        )
-    
-        axes[0].plot(
-            epochs,
-            history["val_loss"],
-            label="Validation loss"
-        )
-    
-        axes[0].set_xlabel("Epoch")
-        axes[0].set_ylabel("Loss")
-        axes[0].set_title(
-            f"Fold {fold} - Loss"
-            if fold is not None
-            else "Loss"
-        )
-        axes[0].legend()
-        axes[0].grid()
-    
-    
-        # ACCURACY
-        axes[1].plot(
-            epochs,
-            history["train_accuracy"],
-            label="Train accuracy"
-        )
-    
-        axes[1].plot(
-            epochs,
-            history["val_accuracy"],
-            label="Validation accuracy"
-        )
-    
-        axes[1].set_xlabel("Epoch")
-        axes[1].set_ylabel("Accuracy")
-        axes[1].set_title(
-            f"Fold {fold} - Accuracy"
-            if fold is not None
-            else "Accuracy"
-        )
-        axes[1].legend()
-        axes[1].grid()
-    
-        plt.tight_layout()
-        plt.show()

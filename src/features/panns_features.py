@@ -9,7 +9,7 @@ from src.utils.paths import CACHE_DIR
 from src.config import SEGMENT_DURATION, MIN_LAST_DURATION
 from src.features.dataset import _find_audio_path
 
-PANNS_SR = 32000  # PANNs models are trained at 32kHz, not our usual 44.1kHz
+PANNS_SR = 32000  
 
 _model = None
 
@@ -18,7 +18,7 @@ def _get_model():
     global _model
     if _model is None:
         from panns_inference import AudioTagging
-        _model = AudioTagging(checkpoint_path=None, device="cpu")  # downloads checkpoint on first call
+        _model = AudioTagging(checkpoint_path=None, device="cpu")  
     return _model
 
 

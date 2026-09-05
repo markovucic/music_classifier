@@ -12,3 +12,5 @@ FEATURE_CACHE_DIR = DATA_DIR / "feature_cache"
 
 RAW_MIDI_DIR = str(DATA_DIR / "musicnet_midis" / "musicnet_midis")
 
+OUTPUT_DIR = ROOT_PATH / "output"
+

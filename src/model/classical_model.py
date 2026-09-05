@@ -1,6 +1,9 @@
+import hashlib
+import json
 import random
 from itertools import product
 
+import joblib
 import numpy as np
 from matplotlib import pyplot as plt
 from sklearn import metrics
@@ -8,6 +11,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder
 
 from src.model.evaluation import majority_vote_prediction, make_sample_weights
+from src.utils.paths import OUTPUT_DIR
 
 
 def _sample_weight_kwarg(model, sample_weights):
@@ -150,7 +154,8 @@ def nested_cv_classical(X, y, groups, model, param_grid, outer_cv, inner_cv,
     all_work_true = []
     all_work_pred = []
 
-    for train_idx, test_idx in outer_cv.split(X, y, groups):
+    for i, (train_idx, test_idx) in enumerate(outer_cv.split(X, y, groups), start=1):
+        print(f"Fold {i}:\n")
         X_train, y_train, groups_train = X[train_idx], y[train_idx], groups[train_idx]
         X_test, y_test, groups_test = X[test_idx], y[test_idx], groups[test_idx]
 
@@ -181,6 +186,7 @@ def nested_cv_classical(X, y, groups, model, param_grid, outer_cv, inner_cv,
         all_work_pred.extend(work_pred)
 
         print(f"outer fold: best_params={best_params} -> accuracy={acc:.4f}, macro_f1={f1:.4f}\n")
+        print(f"==============================================================================\n")
 
     return fold_results, all_work_true, all_work_pred
 
@@ -235,19 +241,77 @@ def _refit_and_collect(X, y, groups, model, params, cv, label_encode):
     return all_work_true, all_work_pred
 
 
-def run_classical_train_pipeline(X, y, groups, model, cv, param_grid=None, outer_cv=None,
-                  randomized_search=False, count=10, label_encode=False):
+def save_classical_model(model_name, model, X, y, groups, cv, param_grid, fold_results,
+                          acc, f1, report, confusion_matrix_fig, randomized_search=False,
+                          count=10, label_encode=False):
+    """Refits on the FULL dataset to get one deployable model - nested CV's fold_results are
+    per-outer-fold best_params (possibly different each fold), not a single answer, so tuning
+    is redone once more on everything if a param_grid was given. Saves that model plus this
+    run's metrics/plot under output/{model_name}_{hash}/."""
+
+    if param_grid:
+        _, best = train_classical_model(
+            X, y, groups, model, cv, param_grid=param_grid,
+            randomized_search=randomized_search, count=count, label_encode=label_encode,
+        )
+        best_params = best[0]
+    else:
+        best_params = {}
+
+    le = LabelEncoder().fit(y) if label_encode else None
+    y_fit = le.transform(y) if label_encode else y
+    sample_weights = make_sample_weights(y, groups)
+
+    model.set_params(**best_params)
+    model.fit(X, y_fit, **_sample_weight_kwarg(model, sample_weights))
+
+    run_key = {
+        "model": type(model).__name__,
+        "param_grid": {k: list(v) for k, v in (param_grid or {}).items()},
+        "cv_splits": getattr(cv, "n_splits", None),
+    }
+    run_hash = hashlib.sha1(json.dumps(run_key, sort_keys=True, default=str).encode()).hexdigest()[:8]
+    run_dir = OUTPUT_DIR / f"{model_name}_{run_hash}"
+    (run_dir / "plots").mkdir(parents=True, exist_ok=True)
+
+    config = {**run_key, "best_params": best_params, "label_encode": label_encode}
+    with open(run_dir / "config.json", "w") as f:
+        json.dump(config, f, indent=2, default=str)
+
+    metrics_out = {
+        "accuracy": acc,
+        "macro_f1": f1,
+        "classification_report": report,
+        "fold_results": [
+            {"best_params": p, "accuracy": a, "macro_f1": fs} for p, a, fs in fold_results
+        ],
+    }
+    with open(run_dir / "metrics.json", "w") as f:
+        json.dump(metrics_out, f, indent=2, default=str)
+
+    joblib.dump(model, run_dir / "model.joblib")
+    confusion_matrix_fig.savefig(run_dir / "plots" / "confusion_matrix.png")
+
+    print(f"saved to {run_dir}")
+    return str(run_dir)
+
+
+def run_classical_train_pipeline(model_name, X, y, groups, model, cv, param_grid=None, outer_cv=None,
+                  randomized_search=False, count=10, label_encode=False, save_model=True):
     """Full classical model training pipeline.
     Evaluates the model with cross-validation. If supplied - runs hyperparameter search,
     in that case performing nested cross-validation, then prints the report and plots the confusion
-    matrix. 
-    
+    matrix.
+
     To perform hyperparameter search, both outer_cv and param_grid must be supplied, otherwise
     error is raised.
 
     For scaled models (e.g. SVM), pass model=make_pipeline(StandardScaler(), SVC(...)) -
-    the scaler then gets refit on each fold's train split automatically, 
-    never touching that fold's validation data."""
+    the scaler then gets refit on each fold's train split automatically,
+    never touching that fold's validation data.
+
+    If save_model=True, refits on the full dataset and saves the model + metrics + confusion
+    matrix under output/{model_name}_{hash}/ (see save_classical_model)."""
 
     if outer_cv is None and param_grid is not None:
         raise ValueError("outer_cv must be supplied when performing hyperparameter tuning")
@@ -273,14 +337,21 @@ def run_classical_train_pipeline(X, y, groups, model, cv, param_grid=None, outer
     acc, f1, report = report_metrics(all_work_true, all_work_pred)
 
     print(report)
-    print("Overall work accuracy:", acc)
-    print("Overall work macro F1:", f1)
+    print(f"Overall work accuracy: {acc:.4f}")
+    print(f"Overall work macro F1: {f1:.4f}")
 
-    metrics.ConfusionMatrixDisplay.from_predictions(
+    disp = metrics.ConfusionMatrixDisplay.from_predictions(
         all_work_true,
         all_work_pred,
         normalize="true"
     )
     plt.show()
 
-    return fold_results, all_work_true, all_work_pred
+    run_dir = None
+    if save_model:
+        run_dir = save_classical_model(
+            model_name, model, X, y, groups, cv, param_grid, fold_results, acc, f1, report,
+            disp.figure_, randomized_search=randomized_search, count=count, label_encode=label_encode,
+        )
+
+    return fold_results, all_work_true, all_work_pred, run_dir

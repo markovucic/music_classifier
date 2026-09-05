@@ -1,20 +1,74 @@
 import hashlib
 import os
 
-import librosa
-import numpy as np
-from tqdm import tqdm
+import pandas as pd
 
-from config import SR, SEGMENT_DURATION, MIN_LAST_DURATION
-from paths import CACHE_DIR
-import feature_engineering
-from feature_engineering import extract_features
+from config import SR, SEGMENT_DURATION, MIN_LAST_DURATION, MIN_WORKS_PER_COMPOSER
+from paths import CACHE_DIR, METADATA_PATH
 
 AUDIO_SPLIT_DIRS = ("train_data", "test_data")
 
 
+def filter_metadata(
+    metadata,
+    min_works_per_composer=MIN_WORKS_PER_COMPOSER,
+    exclude_composers=None,
+):
+    """Return a filtered copy with a work_id for grouping movements of one work.
+
+    Count distinct works (composer + composition), not recordings or movements.
+    Keep composers with at least min_works_per_composer works, then optionally
+    exclude named composers. Preserve the input's row order and index without
+    modifying it. exclude_composers accepts a name or an iterable of names.
+    """
+    required_columns = {"id", "composer", "composition"}
+    missing_columns = required_columns.difference(metadata.columns)
+    if missing_columns:
+        raise ValueError(f"Missing metadata columns: {', '.join(sorted(missing_columns))}")
+    if min_works_per_composer < 1:
+        raise ValueError("min_works_per_composer must be at least 1")
+
+    metadata = metadata.copy()
+    metadata["work_id"] = (
+        metadata["composer"].astype(str)
+        + " | "
+        + metadata["composition"].astype(str)
+    )
+
+    work_counts = metadata.groupby("composer")["work_id"].nunique()
+    valid_composers = work_counts[work_counts >= min_works_per_composer].index
+    keep = metadata["composer"].isin(valid_composers)
+
+    if exclude_composers is not None:
+        if isinstance(exclude_composers, str):
+            exclude_composers = [exclude_composers]
+        keep &= ~metadata["composer"].isin(exclude_composers)
+
+    return metadata.loc[keep].copy()
+
+
+def load_metadata(
+    metadata_path=METADATA_PATH,
+    *,
+    min_works_per_composer=MIN_WORKS_PER_COMPOSER,
+    exclude_composers=None,
+):
+    """Read MusicNet metadata and apply filter_metadata, ready for dataset builders.
+
+    Uses paths.METADATA_PATH and config.MIN_WORKS_PER_COMPOSER by default.
+    For an already loaded DataFrame, call filter_metadata directly.
+    """
+    return filter_metadata(
+        pd.read_csv(metadata_path),
+        min_works_per_composer=min_works_per_composer,
+        exclude_composers=exclude_composers,
+    )
+
+
 def _feature_engineering_version():
     """Hash of feature_engineering.py so a cache is auto-invalidated when it changes."""
+    import feature_engineering
+
     with open(feature_engineering.__file__, "rb") as f:
         return hashlib.sha1(f.read()).hexdigest()[:8]
 
@@ -60,6 +114,13 @@ def make_dataset(
 ):
     """Same as before, but caches (X, y, groups) to disk so repeated runs with the same
     metadata split, segment settings and feature_engineering.py content skip recomputation."""
+
+    # Keep audio dependencies optional when only loading or filtering metadata.
+    import librosa
+    import numpy as np
+    from tqdm import tqdm
+
+    from feature_engineering import extract_features
 
     if cache_path is None:
         cache_path = _cache_path(

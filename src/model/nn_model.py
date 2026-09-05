@@ -386,7 +386,12 @@ def cross_validate_feature_model(
             torch.tensor(X_train, dtype=torch.float32),
             torch.tensor(y_train, dtype=torch.long),
         )
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        if groups is not None:
+            sample_weights = make_sample_weights(y[train_idx], groups[train_idx])
+            sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+            train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=sampler)
+        else:
+            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         model = model_class(input_size=X.shape[1], num_classes=len(label_encoder.classes_)).to(device)
         criterion = torch.nn.CrossEntropyLoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
@@ -482,7 +487,9 @@ def save_feature_model(model_name, model_class, X, y, groups, cv_results, epochs
     train_dataset = TensorDataset(
         torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.long)
     )
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    sample_weights = make_sample_weights(y[train_idx], groups[train_idx])
+    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=sampler)
 
     model = model_class(input_size=X.shape[1], num_classes=len(le.classes_)).to(device)
     criterion = torch.nn.CrossEntropyLoss()

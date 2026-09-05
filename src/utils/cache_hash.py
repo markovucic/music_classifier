@@ -3,10 +3,20 @@ import hashlib
 import inspect
 
 
+def _strip_docstrings(tree):
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
+            if (node.body and isinstance(node.body[0], ast.Expr)
+                    and isinstance(node.body[0].value, ast.Constant)
+                    and isinstance(node.body[0].value.value, str)):
+                node.body.pop(0)
+    return tree
+
+
 def hash_source(obj):
     """AST-based hash of a function's (or file's) source - ignores whitespace/comments/
-    formatting, so cosmetic edits don't invalidate caches keyed on this; only real code
-    changes do. Pass a function/callable, or a file path string."""
+    formatting/docstrings, so cosmetic edits don't invalidate caches keyed on this; only real
+    code changes do. Pass a function/callable, or a file path string."""
     if callable(obj):
         source = inspect.getsource(obj)
     else:
@@ -14,6 +24,7 @@ def hash_source(obj):
             source = f.read()
 
     tree = ast.parse(source)
+    tree = _strip_docstrings(tree)
     dump = ast.dump(tree, annotate_fields=False)
 
     return hashlib.sha1(dump.encode()).hexdigest()[:8]

@@ -8,6 +8,7 @@ from tqdm import tqdm
 from src.utils.paths import CACHE_DIR
 from src.config import SR, SEGMENT_DURATION, MIN_LAST_DURATION, N_FFT
 from src.features.dataset import _find_audio_path
+from src.utils.cache_hash import group_hash
 
 # lower resolution than the classical pipeline's HOP_LENGTH=512 - CPU training speed matters more
 # here than fine time/frequency detail, and this is ~4x faster per sample to train on
@@ -29,10 +30,9 @@ def make_spectrogram_dataset(
     use_cache=True
 ):
     ids = sorted(metadata_split["id"].astype(str).tolist())
-    with open(__file__, "rb") as f:
-        code_hash = hashlib.sha1(f.read()).hexdigest()[:8]
+    code_hash = group_hash(extract_melspec, N_MELS, HOP_LENGTH)
     key = f"melspec|{sr}|{segment_duration}|{min_last_duration}|{code_hash}|{','.join(ids)}"
-    cache_path = CACHE_DIR / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}.npz"
+    cache_path = CACHE_DIR / f"spectrogram_{hashlib.sha1(key.encode()).hexdigest()[:16]}.npz"
 
     if use_cache and os.path.exists(cache_path):
         cached = np.load(cache_path, allow_pickle=True)

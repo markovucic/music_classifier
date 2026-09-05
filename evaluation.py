@@ -56,6 +56,25 @@ def majority_vote_prediction(y_true, y_pred, groups):
     return np.array(work_true), np.array(work_pred)
 
 
+def split_by_work(groups, test_size=0.2, random_state=42):
+    """Plain (non-stratified) work-level split, reusable across differently-shaped feature sets
+    (e.g. audio vs spectrogram segments) that share the same work_id strings."""
+    works = np.unique(groups)
+    rng = np.random.RandomState(random_state)
+    shuffled = works.copy()
+    rng.shuffle(shuffled)
+    n_val = max(1, int(len(shuffled) * test_size))
+    return shuffled[n_val:], shuffled[:n_val]  # train_works, val_works
+
+
+def soft_vote_probs(probabilities, groups, classes):
+    """Like soft_vote_predictions but returns the averaged per-work probability vector
+    instead of the argmax label - needed to combine multiple models' predictions."""
+    work_ids = np.unique(groups)
+    avg_probs = np.array([np.mean(probabilities[groups == w], axis=0) for w in work_ids])
+    return work_ids, avg_probs
+
+
 def soft_vote_predictions(y_true, probabilities, groups, classes):
     """Collapses segment-level class probabilities to one prediction per work_id by averaging."""
     work_true = []

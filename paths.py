@@ -9,3 +9,5 @@ AUDIO_DIR = str(MUSICNET_ROOT)
 METADATA_PATH = str(DATA_DIR / "musicnet_metadata.csv")
 CACHE_DIR = DATA_DIR / "cache"
 
+RAW_MIDI_DIR = str(DATA_DIR / "musicnet_midis" / "musicnet_midis")
+

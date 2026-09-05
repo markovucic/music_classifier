@@ -198,7 +198,7 @@ def make_midi_dataset(
         os.makedirs(CACHE_DIR, exist_ok=True)
         np.savez(cache_path, X=X, y=y, groups=groups)
 
-    return pd.DataFrame(X, columns=midi_feature_names()), y, groups
+    return X, y, groups
 
 
 

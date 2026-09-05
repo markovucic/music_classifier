@@ -1,22 +1,21 @@
 import hashlib
 import os
+import logging
+import time
 
 import librosa
 import numpy as np
 from tqdm import tqdm
 
 from config import SR, SEGMENT_DURATION, MIN_LAST_DURATION
-from paths import CACHE_DIR
+from paths import CACHE_DIR, FEATURE_CACHE_DIR
+from cache_hash import group_hash
 import feature_engineering
-from feature_engineering import extract_features
+
+logger = logging.getLogger(__file__)
+
 
 AUDIO_SPLIT_DIRS = ("train_data", "test_data")
-
-
-def _feature_engineering_version():
-    """Hash of feature_engineering.py so a cache is auto-invalidated when it changes."""
-    with open(feature_engineering.__file__, "rb") as f:
-        return hashlib.sha1(f.read()).hexdigest()[:8]
 
 
 def _find_audio_path(audio_dir, composition_id):
@@ -33,20 +32,24 @@ def _find_audio_path(audio_dir, composition_id):
     )
 
 
-def _cache_path(metadata_split, sr, segment_duration, min_last_duration):
-    composition_ids = sorted(metadata_split["id"].astype(str).tolist())
+def _load_audio_cached(path, composition_id, sr, use_cache=True):
+    """Caches the decoded waveform itself, per (composition_id, sr) - so re-running feature
+    extraction (e.g. to fill in one missing feature group) doesn't need to re-decode audio."""
+    cache_path = CACHE_DIR / f"audio_{composition_id}_{sr}.npy"
 
-    key = "|".join([
-        str(sr),
-        str(segment_duration),
-        str(min_last_duration),
-        _feature_engineering_version(),
-        ",".join(composition_ids)
-    ])
+    if use_cache and os.path.exists(cache_path):
+        logger.debug(f"Cache hit for {composition_id}. Loading it...")
+        return np.load(cache_path)
 
-    digest = hashlib.sha1(key.encode()).hexdigest()[:16]
+    logger.debug(f"Cache miss for {composition_id}. Loading it from .vaw...")
+    audio, _ = librosa.load(path, sr=sr)
 
-    return CACHE_DIR / f"dataset_{digest}.npz"
+    if use_cache:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        np.save(cache_path, audio)
+
+    logger.debug(f"Composition {composition_id} loaded and saved to cache.")
+    return audio
 
 
 def make_dataset(
@@ -55,25 +58,50 @@ def make_dataset(
     sr=SR,
     segment_duration=SEGMENT_DURATION,
     min_last_duration=MIN_LAST_DURATION,
-    use_cache=True,
-    cache_path=None
+    use_cache=True
 ):
-    """Same as before, but caches (X, y, groups) to disk so repeated runs with the same
-    metadata split, segment settings and feature_engineering.py content skip recomputation."""
+    """Caches each feature GROUP separately under FEATURE_CACHE_DIR (one .npz per group,
+    keyed by a hash of only that group's dependency functions). Adding, removing or editing
+    one group in feature_engineering.FEATURE_REGISTRY only recomputes that group - audio is
+    decoded (from the audio cache) only if at least one group is missing."""
 
-    if cache_path is None:
-        cache_path = _cache_path(
-            metadata_split,
-            sr,
-            segment_duration,
-            min_last_duration
+    ids = sorted(metadata_split["id"].astype(str).tolist())
+    dataset_id = hashlib.sha1(
+        f"{sr}|{segment_duration}|{min_last_duration}|{','.join(ids)}".encode()
+    ).hexdigest()[:12]
+
+    os.makedirs(FEATURE_CACHE_DIR, exist_ok=True)
+
+    group_paths = {}
+    for name in feature_engineering.FEATURE_REGISTRY:
+        h = group_hash(*feature_engineering.GROUP_DEPENDENCIES[name])
+        group_paths[name] = FEATURE_CACHE_DIR / f"feature_{name}_v_{h}_{dataset_id}.npz"
+
+    meta_path = FEATURE_CACHE_DIR / f"meta_{dataset_id}.npz"
+
+    cached_groups = {}
+    missing_groups = []
+
+    for name, path in group_paths.items():
+        if use_cache and os.path.exists(path):
+            logger.info(f"Cache hit for feature group {name}. Loading cached values...")
+            cached_groups[name] = np.load(path)["X"]
+        else:
+            logger.info(f"Cache miss from feature group {name}. Features will be regenerated...")
+            missing_groups.append(name)
+
+    if not missing_groups and use_cache and os.path.exists(meta_path):
+        meta = np.load(meta_path, allow_pickle=True)
+        X = np.concatenate(
+            [cached_groups[name] for name in feature_engineering.FEATURE_REGISTRY], axis=1
         )
+        logger.info(f"No cache misses. Loaded all data")
+        return X, meta["y"], meta["groups"]
 
-    if use_cache and os.path.exists(cache_path):
-        cached = np.load(cache_path, allow_pickle=True)
-        return cached["X"], cached["y"], cached["groups"]
-
-    X = []
+    computed = {name: [] for name in missing_groups}
+    computing_time = {name: 0 for name in missing_groups}
+    context_time = 0
+ 
     y = []
     groups = []
 
@@ -83,15 +111,10 @@ def make_dataset(
     for _, row in tqdm(
         metadata_split.iterrows(),
         total=len(metadata_split),
-        desc="Processing compositions"
+        desc="Processing (grouped)"
     ):
-        composition_id = row["id"]
-        composer = row["composer"]
-        work_id = row["work_id"]
-
-        path = _find_audio_path(audio_dir, composition_id)
-
-        audio, _ = librosa.load(path, sr=sr)
+        path = _find_audio_path(audio_dir, row["id"])
+        audio = _load_audio_cached(path, row["id"], sr, use_cache=use_cache)
 
         for start in range(0, len(audio), segment_length):
             segment = audio[start: min(start + segment_length, len(audio))]
@@ -99,21 +122,40 @@ def make_dataset(
             if len(segment) < min_last_length:
                 continue
 
-            features = extract_features(
-                segment,
-                sr
-            )
+            if missing_groups:
+                start_time_ = time.time()
+                ctx = feature_engineering._build_context(segment, sr, needed_groups=missing_groups)
+                end_time_ = time.time()
+                context_time += end_time_ - start_time_
 
-            X.append(features)
-            y.append(composer)
-            groups.append(work_id)
+                for name in missing_groups:
+                    start_time_ = time.time()
+                    values_fn, _ = feature_engineering.FEATURE_REGISTRY[name]
+                    computed[name].append(values_fn(ctx))
+                    end_time_ = time.time()
+                    computing_time[name] += end_time_ - start_time_
 
-    X = np.array(X)
+            y.append(row["composer"])
+            groups.append(row["work_id"])
+
+    logger.info(f"Total time for context build: {context_time:.2f} seconds")
+
     y = np.array(y)
     groups = np.array(groups)
 
+    for name in missing_groups:
+        arr = np.array(computed[name], dtype=np.float32)
+        cached_groups[name] = arr
+
+        if use_cache:
+            logger.info(f"Saved cache for feature group {name} | Total: {computing_time[name]:.2f} seconds")
+            np.savez(group_paths[name], X=arr)
+
     if use_cache:
-        os.makedirs(CACHE_DIR, exist_ok=True)
-        np.savez(cache_path, X=X, y=y, groups=groups)
+        np.savez(meta_path, y=y, groups=groups)
+
+    X = np.concatenate(
+        [cached_groups[name] for name in feature_engineering.FEATURE_REGISTRY], axis=1
+    )
 
     return X, y, groups

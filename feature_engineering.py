@@ -173,97 +173,196 @@ def extract_rms(magnitude):
     return np.mean(rms), np.std(rms)
 
 
+# N_MFCC_DELTA <= N_MFCC - lower it to prune delta coefficients after a feature-importance review
+# feature importance review (RF, 5-fold, raw audio): only 2/40 delta dims made the top-25
+N_MFCC_DELTA = 8
+
+
+# which context keys each group needs - lets _build_context skip work for groups that aren't
+# being (re)computed (e.g. a cache hit elsewhere means we never need mfcc_matrix at all)
+CONTEXT_REQUIREMENTS = {
+    "mfcc": {"mfcc_matrix"},
+    "mfcc_delta": {"mfcc_matrix"},
+    "chroma": {"chroma"},
+    "tonnetz": {"chroma"},
+    "centroid": {"magnitude"},
+    "bandwidth": {"magnitude"},
+    "rolloff": {"magnitude"},
+    "contrast": {"magnitude"},
+    "flatness": {"magnitude"},
+    "zcr": set(),
+    "rms": {"magnitude"},
+    "tempo_onset": set(),
+    "harmonic_percussive": set(),
+}
+
+
+def _build_context(segment, sr, needed_groups=None):
+    """Shared intermediates (STFT/MFCC matrix/chroma), computed lazily: only what
+    needed_groups actually requires (default: everything, i.e. all registered groups)."""
+    if needed_groups is None:
+        needed_groups = FEATURE_REGISTRY.keys()
+
+    needed_keys = set()
+    for group in needed_groups:
+        needed_keys |= CONTEXT_REQUIREMENTS.get(group, set())
+
+    ctx = {"segment": segment, "sr": sr}
+
+    if needed_keys & {"magnitude", "mfcc_matrix", "chroma"}:
+        magnitude, power = extract_power(segment)
+        ctx["magnitude"] = magnitude
+        ctx["power"] = power
+
+    if "mfcc_matrix" in needed_keys:
+        ctx["mfcc_matrix"] = extract_mfcc_matrix(ctx["power"], sr)
+
+    if "chroma" in needed_keys:
+        chroma, _, _ = extract_chroma(ctx["power"], sr)
+        ctx["chroma"] = chroma
+
+    return ctx
+
+
+def _mfcc_values(ctx):
+    return np.concatenate([np.mean(ctx["mfcc_matrix"], axis=1), np.std(ctx["mfcc_matrix"], axis=1)])
+
+
+def _mfcc_names():
+    return [f"mfcc{i}_mean" for i in range(N_MFCC)] + [f"mfcc{i}_std" for i in range(N_MFCC)]
+
+
+def _mfcc_delta_values(ctx):
+    mean, std = extract_mfcc_delta(ctx["mfcc_matrix"])
+    return np.concatenate([mean[:N_MFCC_DELTA], std[:N_MFCC_DELTA]])
+
+
+def _mfcc_delta_names():
+    return [f"mfcc{i}_delta_mean" for i in range(N_MFCC_DELTA)] + [f"mfcc{i}_delta_std" for i in range(N_MFCC_DELTA)]
+
+
+def _chroma_values(ctx):
+    return np.concatenate([np.mean(ctx["chroma"], axis=1), np.std(ctx["chroma"], axis=1)])
+
+
+def _chroma_names():
+    return [f"chroma_{p}_mean" for p in PITCH_CLASSES] + [f"chroma_{p}_std" for p in PITCH_CLASSES]
+
+
+def _tonnetz_values(ctx):
+    mean, std = extract_tonnetz(ctx["chroma"], ctx["sr"])
+    return np.concatenate([mean, std])
+
+
+def _tonnetz_names():
+    return [f"tonnetz{i}_mean" for i in range(6)] + [f"tonnetz{i}_std" for i in range(6)]
+
+
+def _centroid_values(ctx):
+    return np.array(extract_spectral_centroid(ctx["magnitude"], ctx["sr"]))
+
+
+def _bandwidth_values(ctx):
+    return np.array(extract_spectral_bandwidth(ctx["magnitude"], ctx["sr"]))
+
+
+def _rolloff_values(ctx):
+    return np.array(extract_spectral_rollof(ctx["magnitude"], ctx["sr"]))
+
+
+def _contrast_values(ctx):
+    mean, std = extract_spectral_contrast(ctx["magnitude"], ctx["sr"])
+    return np.concatenate([mean, std])
+
+
+def _contrast_names():
+    return [f"contrast_band{i}_mean" for i in range(7)] + [f"contrast_band{i}_std" for i in range(7)]
+
+
+def _flatness_values(ctx):
+    return np.array(extract_spectral_flatness(ctx["magnitude"]))
+
+
+def _zcr_values(ctx):
+    return np.array(extract_zero_crossing_rate(ctx["segment"]))
+
+
+def _rms_values(ctx):
+    return np.array(extract_rms(ctx["magnitude"]))
+
+
+def _tempo_onset_values(ctx):
+    return np.array(extract_tempo_onset(ctx["segment"], ctx["sr"]))
+
+
+def _harmonic_percussive_values(ctx):
+    return np.array(extract_harmonic_percussive_ratio(ctx["segment"]))
+
+
+# one row per feature group: (values_fn, names_fn) - kept together so they can't drift out of sync
+FEATURE_REGISTRY = {
+    "mfcc": (_mfcc_values, _mfcc_names),
+    "mfcc_delta": (_mfcc_delta_values, _mfcc_delta_names),
+    # feature importance review: chroma/tonnetz/flatness had ~0 individual features in the
+    # top-25 and the lowest per-dimension importance of all groups - disabled.
+    # "chroma": (_chroma_values, _chroma_names),
+    # "tonnetz": (_tonnetz_values, _tonnetz_names),
+    "centroid": (_centroid_values, lambda: ["centroid_mean", "centroid_std"]),
+    "bandwidth": (_bandwidth_values, lambda: ["bandwidth_mean", "bandwidth_std"]),
+    "rolloff": (_rolloff_values, lambda: ["rolloff_mean", "rolloff_std"]),
+    "contrast": (_contrast_values, _contrast_names),
+    # "flatness": (_flatness_values, lambda: ["flatness_mean", "flatness_std"]),
+    "zcr": (_zcr_values, lambda: ["zcr_mean", "zcr_std"]),
+    "rms": (_rms_values, lambda: ["rms_mean", "rms_std"]),
+    "tempo_onset": (_tempo_onset_values, lambda: ["tempo", "onset_mean", "onset_std"]),
+    "harmonic_percussive": (_harmonic_percussive_values, lambda: ["harmonic_ratio", "percussive_rms"]),
+}
+
+
+# every function each group's value transitively depends on - a change to ANY of them must
+# invalidate that group's cache (e.g. tonnetz depends on extract_chroma, not just extract_tonnetz)
+GROUP_DEPENDENCIES = {
+    "mfcc": (extract_power, extract_mfcc_matrix, _mfcc_values, N_MFCC),
+    "mfcc_delta": (extract_power, extract_mfcc_matrix, extract_mfcc_delta, _mfcc_delta_values, N_MFCC_DELTA),
+    "chroma": (extract_power, extract_chroma, _chroma_values),
+    "tonnetz": (extract_power, extract_chroma, extract_tonnetz, _tonnetz_values),
+    "centroid": (extract_power, extract_spectral_centroid, _centroid_values),
+    "bandwidth": (extract_power, extract_spectral_bandwidth, _bandwidth_values),
+    "rolloff": (extract_power, extract_spectral_rollof, _rolloff_values),
+    "contrast": (extract_power, extract_spectral_contrast, _contrast_values),
+    "flatness": (extract_power, extract_spectral_flatness, _flatness_values),
+    "zcr": (extract_zero_crossing_rate, _zcr_values),
+    "rms": (extract_power, extract_rms, _rms_values),
+    "tempo_onset": (extract_tempo_onset, _tempo_onset_values),
+    "harmonic_percussive": (extract_harmonic_percussive_ratio, _harmonic_percussive_values),
+}
+
+
+def extract_feature_group(group_name, segment, sr, ctx=None):
+    """Compute a single registered group's values for one segment."""
+    values_fn, _ = FEATURE_REGISTRY[group_name]
+
+    if ctx is None:
+        ctx = _build_context(segment, sr, needed_groups=[group_name])
+
+    return values_fn(ctx)
+
+
 def extract_features(segment, sr):
-    """Builds the full feature vector for one audio segment. Order must match feature_names()."""
-    features = []
+    """Builds the full feature vector for one audio segment, via FEATURE_REGISTRY."""
+    ctx = _build_context(segment, sr)
 
-    magnitude, power = extract_power(segment)
-
-    mfcc = extract_mfcc_matrix(power, sr)
-    features.extend(np.mean(mfcc, axis=1))
-    features.extend(np.std(mfcc, axis=1))
-
-    mfcc_delta_mean, mfcc_delta_std = extract_mfcc_delta(mfcc)
-    features.extend(mfcc_delta_mean)
-    features.extend(mfcc_delta_std)
-
-    chroma, chroma_mean, chroma_std = extract_chroma(power, sr)
-    features.extend(chroma_mean)
-    features.extend(chroma_std)
-
-    tonnetz_mean, tonnetz_std = extract_tonnetz(chroma, sr)
-    features.extend(tonnetz_mean)
-    features.extend(tonnetz_std)
-
-    centroid_mean, centroid_std = extract_spectral_centroid(magnitude, sr)
-    features.append(centroid_mean)
-    features.append(centroid_std)
-
-    bandwidth_mean, bandwidth_std = extract_spectral_bandwidth(magnitude, sr)
-    features.append(bandwidth_mean)
-    features.append(bandwidth_std)
-
-    rolloff_mean, rolloff_std = extract_spectral_rollof(magnitude, sr)
-    features.append(rolloff_mean)
-    features.append(rolloff_std)
-
-    contrast_mean, contrast_std = extract_spectral_contrast(magnitude, sr)
-    features.extend(contrast_mean)
-    features.extend(contrast_std)
-
-    flatness_mean, flatness_std = extract_spectral_flatness(magnitude)
-    features.append(flatness_mean)
-    features.append(flatness_std)
-
-    zcr_mean, zcr_std = extract_zero_crossing_rate(segment)
-    features.append(zcr_mean)
-    features.append(zcr_std)
-
-    rms_mean, rms_std = extract_rms(magnitude)
-    features.append(rms_mean)
-    features.append(rms_std)
-
-    tempo, onset_mean, onset_std = extract_tempo_onset(segment, sr)
-    features.append(tempo)
-    features.append(onset_mean)
-    features.append(onset_std)
-
-    harmonic_ratio, percussive_rms = extract_harmonic_percussive_ratio(segment)
-    features.append(harmonic_ratio)
-    features.append(percussive_rms)
-
-    return np.array(features, dtype=np.float32)
+    return np.concatenate(
+        [values_fn(ctx) for values_fn, _ in FEATURE_REGISTRY.values()]
+    ).astype(np.float32)
 
 
 def feature_names():
-    """Names matching the order extract_features() builds its vector in — used to label
-    feature-importance plots etc."""
+    """Names matching extract_features()'s order - derived from the same FEATURE_REGISTRY,
+    so the two can't drift out of sync."""
     names = []
 
-    names += [f"mfcc{i}_mean" for i in range(N_MFCC)]
-    names += [f"mfcc{i}_std" for i in range(N_MFCC)]
-
-    names += [f"mfcc{i}_delta_mean" for i in range(N_MFCC)]
-    names += [f"mfcc{i}_delta_std" for i in range(N_MFCC)]
-
-    names += [f"chroma_{p}_mean" for p in PITCH_CLASSES]
-    names += [f"chroma_{p}_std" for p in PITCH_CLASSES]
-
-    names += [f"tonnetz{i}_mean" for i in range(6)]
-    names += [f"tonnetz{i}_std" for i in range(6)]
-
-    names += ["centroid_mean", "centroid_std"]
-    names += ["bandwidth_mean", "bandwidth_std"]
-    names += ["rolloff_mean", "rolloff_std"]
-
-    names += [f"contrast_band{i}_mean" for i in range(7)]
-    names += [f"contrast_band{i}_std" for i in range(7)]
-
-    names += ["flatness_mean", "flatness_std"]
-    names += ["zcr_mean", "zcr_std"]
-    names += ["rms_mean", "rms_std"]
-
-    names += ["tempo", "onset_mean", "onset_std"]
-    names += ["harmonic_ratio", "percussive_rms"]
+    for _, names_fn in FEATURE_REGISTRY.values():
+        names.extend(names_fn())
 
     return names
